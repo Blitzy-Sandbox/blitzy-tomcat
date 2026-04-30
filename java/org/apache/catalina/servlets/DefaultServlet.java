@@ -253,7 +253,8 @@ public class DefaultServlet extends HttpServlet {
     /**
      * Flag that indicates whether partial PUTs are permitted.
      */
-    private boolean allowPartialPut = true;
+    // Default changed to false - CVE-2025-24813 mitigation. Set allowPartialPut=true explicitly to re-enable.
+    private boolean allowPartialPut = false;
 
     /**
      * Use strong etags whenever possible.
@@ -627,6 +628,15 @@ public class DefaultServlet extends HttpServlet {
 
         String path = getRelativePath(req);
 
+        // CVE-2025-24813 - reject WEB-INF / META-INF as the first non-root path segment
+        String firstSegment = firstNonRootSegment(path);
+        if (firstSegment != null
+                && (firstSegment.equalsIgnoreCase("WEB-INF")
+                    || firstSegment.equalsIgnoreCase("META-INF"))) {
+            resp.sendError(HttpServletResponse.SC_FORBIDDEN);
+            return;
+        }
+
         WebResource resource = resources.getResource(path);
 
         ContentRange range = parseContentRange(req, resp);
@@ -637,6 +647,16 @@ public class DefaultServlet extends HttpServlet {
         }
 
         if (!checkIfHeaders(req, resp, resource)) {
+            return;
+        }
+
+        // CVE-2024-50379 / CVE-2024-56337 - pre-write canonical-path equivalence check
+        String canonicalPathBefore = resource.getCanonicalPath();
+        File canonicalFileBefore = canonicalPathBefore != null ? new File(canonicalPathBefore) : null;
+        if (isCaseInsensitiveFilesystem(canonicalFileBefore, path)
+                && canonicalFileBefore != null
+                && !pathsEqualByName(canonicalPathBefore, path)) {
+            resp.sendError(HttpServletResponse.SC_FORBIDDEN);
             return;
         }
 
@@ -657,6 +677,14 @@ public class DefaultServlet extends HttpServlet {
             }
 
             if (resourceInputStream != null && resources.write(path, resourceInputStream, true)) {
+                // CVE-2024-50379 / CVE-2024-56337 - post-write canonical-path re-check
+                WebResource postWrite = resources.getResource(path);
+                String postCanonical = postWrite != null ? postWrite.getCanonicalPath() : null;
+                if (postCanonical != null && !pathsEqualByName(postCanonical, path)) {
+                    postWrite.delete();
+                    resp.sendError(HttpServletResponse.SC_CONFLICT);
+                    return;
+                }
                 if (resource.exists()) {
                     resp.setStatus(HttpServletResponse.SC_NO_CONTENT);
                 } else {
@@ -773,6 +801,16 @@ public class DefaultServlet extends HttpServlet {
         WebResource resource = resources.getResource(path);
 
         if (!checkIfHeaders(req, resp, resource)) {
+            return;
+        }
+
+        // CVE-2024-50379 / CVE-2024-56337 - case-folding collision protection on delete
+        String canonicalDeletePath = resource.getCanonicalPath();
+        File canonicalDeleteFile = canonicalDeletePath != null ? new File(canonicalDeletePath) : null;
+        if (isCaseInsensitiveFilesystem(canonicalDeleteFile, path)
+                && canonicalDeleteFile != null
+                && !pathsEqualByName(canonicalDeletePath, path)) {
+            resp.sendError(HttpServletResponse.SC_FORBIDDEN);
             return;
         }
 
@@ -1384,6 +1422,103 @@ public class DefaultServlet extends HttpServlet {
             return end;
         }
     }
+
+
+    /**
+     * Detects whether the underlying filesystem is case-insensitive. Uses
+     * {@link java.io.File#getCanonicalFile()} comparison plus a
+     * {@code System.getProperty("os.name")} fallback. Used by the
+     * CVE-2024-50379 / CVE-2024-56337 mitigation in
+     * {@link #doPut(HttpServletRequest, HttpServletResponse)} and
+     * {@link #doDelete(HttpServletRequest, HttpServletResponse)}.
+     * <p>
+     * Per the user directive this method does NOT use
+     * {@link String#equalsIgnoreCase(String)}; it uses
+     * {@link String#equals(Object)} against canonical and requested names so
+     * case-folding by the OS is detected explicitly.
+     *
+     * @param file          the canonical file representation of the resolved
+     *                          write target, or {@code null} when the
+     *                          resource does not yet exist
+     * @param requestedPath the relative path supplied by the client request
+     *
+     * @return {@code true} when the underlying filesystem is detected as
+     *             case-insensitive (either via canonical-name divergence or
+     *             via the {@code os.name} fallback), {@code false} otherwise
+     */
+    private static boolean isCaseInsensitiveFilesystem(File file, String requestedPath) {
+        try {
+            if (file != null) {
+                File canonical = file.getCanonicalFile();
+                if (!canonical.getName().equals(file.getName())) {
+                    return true;
+                }
+            }
+        } catch (IOException ignored) {
+            // fall through to OS-name fallback
+        }
+        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        return os.contains("windows") || os.contains("mac os x");
+    }
+
+
+    /**
+     * Returns the first non-root path segment of an absolute or relative URI
+     * path. For {@code "/WEB-INF/web.xml"} returns {@code "WEB-INF"}. For
+     * {@code "/"} or {@code null} returns {@code null}. For path-parameterized
+     * inputs ({@code ";jsessionid=..."}) the caller is expected to have
+     * stripped path parameters first via
+     * {@code RequestUtil.stripPathParams(...)}.
+     *
+     * @param path the path to inspect
+     *
+     * @return the first non-root segment, or {@code null} if the path is
+     *             empty, root, or {@code null}
+     */
+    private static String firstNonRootSegment(String path) {
+        if (path == null || path.isEmpty() || path.equals("/")) {
+            return null;
+        }
+        int start = path.charAt(0) == '/' ? 1 : 0;
+        int end = path.indexOf('/', start);
+        if (end == -1) {
+            end = path.length();
+        }
+        if (end <= start) {
+            return null;
+        }
+        return path.substring(start, end);
+    }
+
+
+    /**
+     * Returns {@code true} if the canonical path's terminal segment matches
+     * the requested path's terminal segment using case-sensitive
+     * {@link String#equals(Object)}. Used to detect case-folded collisions on
+     * case-insensitive filesystems for CVE-2024-50379 / CVE-2024-56337.
+     *
+     * @param canonical the canonical filesystem path (typically from
+     *                      {@code WebResource.getCanonicalPath()} or
+     *                      {@link java.io.File#getCanonicalPath()})
+     * @param requested the relative path supplied by the client request
+     *
+     * @return {@code true} when both terminal segments are case-sensitively
+     *             equal (or both inputs are {@code null}), {@code false}
+     *             otherwise
+     */
+    private static boolean pathsEqualByName(String canonical, String requested) {
+        if (canonical == null || requested == null) {
+            return canonical == requested;
+        }
+        String canonicalName = canonical.substring(canonical.lastIndexOf('/') + 1);
+        // Requested may use either '/' or '\' depending on caller; handle both
+        int reqLastForward = requested.lastIndexOf('/');
+        int reqLastBack = requested.lastIndexOf('\\');
+        int reqLast = Math.max(reqLastForward, reqLastBack);
+        String requestedName = requested.substring(reqLast + 1);
+        return canonicalName.equals(requestedName);
+    }
+
 
     private boolean pathEndsWithCompressedExtension(String path) {
         for (CompressionFormat format : compressionFormats) {
