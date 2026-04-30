@@ -556,9 +556,17 @@ public class RewriteValve extends ValveBase {
                     // Step 3. Complete the 2nd stage to encoding.
                     chunk.append(REWRITE_DEFAULT_ENCODER.encode(urlStringRewriteEncoded, uriCharset));
                     // Rewriting may have denormalized the URL and added encoded characters
-                    // Decode then normalize
+                    // Decode then normalize; normalize() returns null for invalid paths - callers MUST null-check
                     String urlStringRewriteDecoded = URLDecoder.decode(urlStringRewriteEncoded, uriCharset);
                     urlStringRewriteDecoded = RequestUtil.normalize(urlStringRewriteDecoded);
+                    // CVE-2025-55752 - reject paths that normalize() invalidated or that retain ../ segments
+                    if (urlStringRewriteDecoded == null
+                            || urlStringRewriteDecoded.startsWith("/../")
+                            || urlStringRewriteDecoded.equals("/..")
+                            || hasDotDotSegment(urlStringRewriteDecoded)) {
+                        response.sendError(HttpServletResponse.SC_BAD_REQUEST);
+                        return;
+                    }
                     request.getCoyoteRequest().decodedURI().setChars(MessageBytes.EMPTY_CHAR_ARRAY, 0, 0);
                     chunk = request.getCoyoteRequest().decodedURI().getCharChunk();
                     if (context) {
@@ -894,6 +902,31 @@ public class RewriteValve extends ValveBase {
         } else {
             return input;
         }
+    }
+
+
+    /**
+     * Returns true if the path contains a ".." segment (a segment delimited by
+     * forward slashes that is exactly the two-character string ".."). Used to
+     * detect post-decode traversal escape that survived RequestUtil.normalize().
+     * CVE-2025-55752 mitigation helper.
+     */
+    private static boolean hasDotDotSegment(String path) {
+        if (path == null) {
+            return false;
+        }
+        int i = 0;
+        while (i < path.length()) {
+            int next = path.indexOf('/', i);
+            if (next == -1) {
+                next = path.length();
+            }
+            if (next - i == 2 && path.charAt(i) == '.' && path.charAt(i + 1) == '.') {
+                return true;
+            }
+            i = next + 1;
+        }
+        return false;
     }
 
 
