@@ -38,6 +38,7 @@ import org.junit.Test;
 
 import org.apache.catalina.Context;
 import org.apache.catalina.Globals;
+import org.apache.catalina.LifecycleException;
 import org.apache.catalina.connector.Connector;
 import org.apache.catalina.startup.Tomcat;
 import org.apache.catalina.startup.TomcatBaseTest;
@@ -935,6 +936,109 @@ public class TestAbstractAjpProcessor extends TomcatBaseTest {
         @Override
         protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
             resp.flushBuffer();
+        }
+    }
+
+
+    /**
+     * Verifies that an AJP connector with secretRequired=true and no secret
+     * configured aborts startup with LifecycleException, and that an AJP
+     * connector with a valid secret starts successfully.
+     *
+     * Regression test for CVE-2020-1938 (Ghostcat). The production fix in
+     * AbstractAjpProtocol.start() throws LifecycleException (NOT
+     * IllegalArgumentException) before super.start() binds the endpoint.
+     */
+    @Test
+    public void testAjpStartupFailsWithoutSecret() throws Exception {
+        // Sub-scenario 1: secretRequired=true (default) + no secret => LifecycleException, endpoint NOT bound
+
+        Tomcat tomcatNoSecret = new Tomcat();
+        // Use ephemeral port (0) so we don't collide with the main test fixture port.
+        Connector connectorNoSecret = new Connector(getProtocol());
+        connectorNoSecret.setPort(0);
+        // Force the LifecycleException to propagate out of connector.start()
+        // (Connector defaults throwOnFailure to false; tests that need to observe the
+        // failure must opt in - matches the pattern used in TestConnector.java).
+        connectorNoSecret.setThrowOnFailure(true);
+        // Default secretRequired is true; explicitly set to make the intent visible.
+        connectorNoSecret.setProperty("secretRequired", "true");
+        // Do NOT set the "secret" property - this is the CVE-2020-1938 attack scenario.
+        tomcatNoSecret.getService().addConnector(connectorNoSecret);
+        // Minimal context bootstrap so Tomcat does not fail on missing webapp dir.
+        tomcatNoSecret.addContext("", System.getProperty("java.io.tmpdir"));
+
+        Throwable caught = null;
+        try {
+            tomcatNoSecret.start();
+            Assert.fail("Tomcat startup should have failed with LifecycleException because " +
+                    "secretRequired=true and no secret was configured (CVE-2020-1938).");
+        } catch (LifecycleException e) {
+            caught = e;
+        } catch (Throwable t) {
+            // Walk the cause chain - the underlying start() throws LifecycleException
+            // which may be wrapped by Tomcat's lifecycle propagation.
+            Throwable current = t;
+            while (current != null) {
+                if (current instanceof LifecycleException) {
+                    caught = current;
+                    break;
+                }
+                current = current.getCause();
+            }
+            if (caught == null) {
+                Assert.fail("Expected LifecycleException, got " + t.getClass().getName() +
+                        ": " + t.getMessage());
+            }
+        } finally {
+            // Best-effort cleanup; if startup failed, stop() may itself fail - swallow.
+            try {
+                tomcatNoSecret.stop();
+            } catch (Throwable ignored) {
+                // expected - connector never reached STARTED
+            }
+            try {
+                tomcatNoSecret.destroy();
+            } catch (Throwable ignored) {
+                // expected
+            }
+        }
+        Assert.assertNotNull("LifecycleException must have been thrown for missing AJP secret", caught);
+        Assert.assertTrue("Exception must be LifecycleException (not IllegalArgumentException) per CVE-2020-1938 " +
+                "lifecycle hardening - actual: " + caught.getClass().getName(),
+                caught instanceof LifecycleException);
+
+        // Verify endpoint did NOT bind: getLocalPort() returns -1 when the connector
+        // never reached STARTED state, because the underlying ProtocolHandler.start()
+        // threw before super.start() invoked endpoint.start().
+        Assert.assertEquals("AJP endpoint must not bind to a port when secret enforcement aborts startup",
+                -1, connectorNoSecret.getLocalPort());
+
+        // Sub-scenario 2: secretRequired=true + valid secret => startup succeeds, endpoint binds
+        Tomcat tomcatValidSecret = new Tomcat();
+        Connector connectorValidSecret = new Connector(getProtocol());
+        connectorValidSecret.setPort(0);
+        connectorValidSecret.setThrowOnFailure(true);
+        connectorValidSecret.setProperty("secretRequired", "true");
+        connectorValidSecret.setProperty("secret", "valid-secret-value");
+        tomcatValidSecret.getService().addConnector(connectorValidSecret);
+        tomcatValidSecret.addContext("", System.getProperty("java.io.tmpdir"));
+
+        try {
+            tomcatValidSecret.start();
+            Assert.assertTrue("Connector with valid secret must bind to a port (CVE-2020-1938 success path)",
+                    connectorValidSecret.getLocalPort() > 0);
+        } finally {
+            try {
+                tomcatValidSecret.stop();
+            } catch (Throwable ignored) {
+                // best effort
+            }
+            try {
+                tomcatValidSecret.destroy();
+            } catch (Throwable ignored) {
+                // best effort
+            }
         }
     }
 
