@@ -96,6 +96,7 @@
     -->
 
     <!-- Define an AJP 1.3 Connector on port 8009 -->
+    <!-- WARNING: Do not enable AJP without configuring the 'secret' attribute. See CVE-2020-1938. -->
     <!--
     <Connector protocol="AJP/1.3"
                address="::1"
