@@ -224,6 +224,14 @@
         ensure only one <code>ApplicationContext</code> instance is created.
         (dsoumis)
       </fix>
+      <fix>
+        Change the default value of the <code>allowPartialPut</code>
+        initialisation parameter of the <code>DefaultServlet</code> from
+        <code>true</code> to <code>false</code> to mitigate CVE-2025-24813.
+        Deployments relying on partial PUT must explicitly set
+        <code>allowPartialPut=true</code> in <code>DefaultServlet</code> init
+        parameters. (markt)
+      </fix>
     </changelog>
   </subsection>
   <subsection name="Coyote">
