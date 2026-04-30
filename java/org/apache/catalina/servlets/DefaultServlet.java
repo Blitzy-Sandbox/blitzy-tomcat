@@ -1510,7 +1510,11 @@ public class DefaultServlet extends HttpServlet {
         if (canonical == null || requested == null) {
             return canonical == requested;
         }
-        String canonicalName = canonical.substring(canonical.lastIndexOf('/') + 1);
+        // Use platform-aware File.getName() so canonical paths produced by
+        // File.getCanonicalPath() are handled correctly on every platform,
+        // including Windows where the native separator is '\\'. This mirrors
+        // the File.getName() comparison used in isCaseInsensitiveFilesystem.
+        String canonicalName = new File(canonical).getName();
         // Requested may use either '/' or '\' depending on caller; handle both
         int reqLastForward = requested.lastIndexOf('/');
         int reqLastBack = requested.lastIndexOf('\\');
