@@ -946,8 +946,9 @@ public class TestAbstractAjpProcessor extends TomcatBaseTest {
      * connector with a valid secret starts successfully.
      *
      * Regression test for CVE-2020-1938 (Ghostcat). The production fix in
-     * AbstractAjpProtocol.start() throws LifecycleException (NOT
-     * IllegalArgumentException) before super.start() binds the endpoint.
+     * AbstractAjpProtocol.init() throws LifecycleException (NOT
+     * IllegalArgumentException) before super.init() invokes endpoint.init()
+     * which would otherwise bind the listen socket.
      */
     @Test
     public void testAjpStartupFailsWithoutSecret() throws Exception {
@@ -976,7 +977,7 @@ public class TestAbstractAjpProcessor extends TomcatBaseTest {
         } catch (LifecycleException e) {
             caught = e;
         } catch (Throwable t) {
-            // Walk the cause chain - the underlying start() throws LifecycleException
+            // Walk the cause chain - the underlying init() throws LifecycleException
             // which may be wrapped by Tomcat's lifecycle propagation.
             Throwable current = t;
             while (current != null) {
@@ -1009,8 +1010,8 @@ public class TestAbstractAjpProcessor extends TomcatBaseTest {
                 caught instanceof LifecycleException);
 
         // Verify endpoint did NOT bind: getLocalPort() returns -1 when the connector
-        // never reached STARTED state, because the underlying ProtocolHandler.start()
-        // threw before super.start() invoked endpoint.start().
+        // never reached STARTED state, because AbstractAjpProtocol.init() threw the
+        // LifecycleException before super.init() invoked endpoint.init() -> bindWithCleanup().
         Assert.assertEquals("AJP endpoint must not bind to a port when secret enforcement aborts startup",
                 -1, connectorNoSecret.getLocalPort());
 
