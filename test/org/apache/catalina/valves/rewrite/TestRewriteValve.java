@@ -26,6 +26,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.Cookie;
@@ -835,6 +836,79 @@ public class TestRewriteValve extends TomcatBaseTest {
     @Test
     public void testMultiLine002() throws Exception {
         doTestRewrite("RewriteRule /dummy /a\nRewriteRule /a /c [L]", "/dummy", "/c");
+    }
+
+    /**
+     * CVE-2025-55752: A rewritten URL whose decoded form attempts to escape
+     * the root (e.g. decodes to {@code /../WEB-INF/web.xml}) MUST be rejected
+     * with HTTP 400 Bad Request before {@code decodedURI()} is populated and
+     * before any downstream valve or servlet is invoked.
+     * <p>
+     * The rewrite rule below produces the literal string
+     * {@code /%2e%2e/WEB-INF/web.xml} as the rewrite output. The backslash
+     * escapes ({@code \%}) prevent the rewrite parser from interpreting the
+     * percent signs as variable expansion markers, so the rule output contains
+     * literal percent-encoded dots. {@code RewriteValve.invoke()} URL-decodes
+     * the rule output and {@code RequestUtil.normalize()} returns {@code null}
+     * because the path attempts to escape the root. The new
+     * null-and-traversal validator must catch the {@code null} return, send
+     * 400 Bad Request, and abort the rewrite without populating
+     * {@code decodedURI()} or invoking any downstream valve.
+     */
+    @Test
+    public void testTraversalRejectedAfterRewrite() throws Exception {
+
+        Tomcat tomcat = getTomcatInstance();
+
+        // No file system docBase required
+        Context ctx = getProgrammaticRootContext();
+
+        // Install RewriteValve with a rule whose output decodes to a
+        // path-traversal sequence that escapes the application root.
+        RewriteValve rewriteValve = new RewriteValve();
+        ctx.getPipeline().addValve(rewriteValve);
+        rewriteValve.setConfiguration("RewriteRule ^/source(.*) /\\%2e\\%2e/WEB-INF/web.xml");
+
+        // Counting valve installed AFTER RewriteValve. If RewriteValve
+        // correctly aborts via response.sendError(400) and returns, this
+        // valve must NOT be invoked. If the validator regresses and the
+        // request leaks through, this valve increments and the assertion
+        // below fails.
+        AtomicInteger downstreamInvocations = new AtomicInteger();
+        ctx.getPipeline().addValve(new ValveBase() {
+            @Override
+            public void invoke(Request request, Response response) throws IOException, ServletException {
+                downstreamInvocations.incrementAndGet();
+                getNext().invoke(request, response);
+            }
+        });
+
+        // Sentinel servlet - if it is reached, snoop output (CONTEXT-NAME etc)
+        // would appear in the response body, providing a redundant indicator.
+        Tomcat.addServlet(ctx, "snoop", new SnoopServlet());
+        ctx.addServletMappingDecoded("/", "snoop");
+
+        tomcat.start();
+
+        ByteChunk res = new ByteChunk();
+        int rc = methodUrl("http://localhost:" + getPort() + "/source/foo", res,
+                DEFAULT_CLIENT_TIMEOUT_MS, null, null, Method.GET, true);
+
+        // Primary assertion: HTTP 400 Bad Request returned by the validator
+        Assert.assertEquals(HttpServletResponse.SC_BAD_REQUEST, rc);
+
+        // Secondary assertion: the counting valve was never invoked, proving
+        // that no downstream pipeline traversal occurred after the rewrite
+        // was rejected.
+        Assert.assertEquals(0, downstreamInvocations.get());
+
+        // Tertiary assertion: response body must NOT contain SnoopServlet
+        // output. CONTEXT-NAME is a sentinel marker the snoop servlet emits
+        // in its response and is the most reliable indicator that the
+        // servlet was reached.
+        res.setCharset(StandardCharsets.UTF_8);
+        Assert.assertFalse("SnoopServlet must not be invoked",
+                res.toString().contains("CONTEXT-NAME"));
     }
 
     private void doTestRewrite(String config, String request, String expectedURI) throws Exception {

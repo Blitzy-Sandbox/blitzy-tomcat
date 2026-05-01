@@ -25,6 +25,7 @@ CONTENTS:
 =========
 
 * Dependency Changes
+* Important Default Changes
 * API Stability
 * Bundled APIs
 * Web application reloading and static fields in shared libraries
@@ -38,6 +39,17 @@ CONTENTS:
 Dependency Changes:
 ===================
 Tomcat @VERSION_MAJOR_MINOR@ is designed to run on Java @MIN_JAVA_VERSION@ and later.
+
+
+==========================
+Important Default Changes:
+==========================
+The following init parameter defaults have changed in this release. Operators
+upgrading from earlier @VERSION_MAJOR_MINOR@ snapshots should review these changes:
+
+* allowPartialPut init parameter default changed from true to false to mitigate
+  CVE-2025-24813. Deployments relying on partial PUT must explicitly set
+  allowPartialPut=true in DefaultServlet init parameters.
 
 
 ==============

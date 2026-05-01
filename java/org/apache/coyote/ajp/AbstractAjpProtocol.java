@@ -19,6 +19,7 @@ package org.apache.coyote.ajp;
 import java.net.InetAddress;
 import java.util.regex.Pattern;
 
+import org.apache.catalina.LifecycleException;
 import org.apache.coyote.AbstractProtocol;
 import org.apache.coyote.Processor;
 import org.apache.coyote.UpgradeProtocol;
@@ -354,18 +355,30 @@ public abstract class AbstractAjpProtocol<S> extends AbstractProtocol<S> {
 
 
     /**
-     * Starts the AJP protocol handler. Validates that a secret is configured if required.
+     * Initializes the AJP protocol handler. Validates that a secret is configured if required.
+     * <p>
+     * The secret check executes before {@code super.init()} which calls {@code endpoint.init()}
+     * and binds the listen socket. Throwing a {@link LifecycleException} here aborts the
+     * lifecycle before the endpoint binds, so a misconfigured AJP connector never opens a
+     * listen socket on the network. This is the CVE-2020-1938 (Ghostcat) lifecycle hardening
+     * required by the project security plan: the failure must surface before the port is bound.
      *
-     * @throws Exception if start fails
+     * @throws Exception if initialization fails or the secret check fails
      */
     @Override
-    public void start() throws Exception {
+    public void init() throws Exception {
+        // CVE-2020-1938 (Ghostcat) - lifecycle-layer enforcement of AJP secret.
+        // Performed in init() (not start()) so the LifecycleException is thrown before
+        // super.init() invokes endpoint.init() -> bindWithCleanup() which opens the
+        // listen socket. See AbstractEndpoint.init() (bindOnInit defaults to true).
         if (getSecretRequired()) {
-            String secret = getSecret();
-            if (secret == null || secret.isEmpty()) {
-                throw new IllegalArgumentException(sm.getString("ajpprotocol.noSecret"));
+            String secretValue = getSecret();
+            if (secretValue == null || secretValue.isEmpty()) {
+                throw new LifecycleException(sm.getString("ajpprotocol.noSecret"));
             }
+        } else {
+            getLog().warn(sm.getString("ajpprotocol.noSecretWarning"));
         }
-        super.start();
+        super.init();
     }
 }
