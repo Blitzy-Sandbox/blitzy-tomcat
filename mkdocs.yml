@@ -1,0 +1,11 @@
+site_name: Tomcat
+site_description: Apache Tomcat - open source implementation of Jakarta Servlet, Pages, EL and WebSocket technologies.
+
+plugins:
+  - techdocs-core
+  - mermaid2
+
+nav:
+  - Home: index.md
+  - Overview: overview.md
+  - Setup: setup.md
