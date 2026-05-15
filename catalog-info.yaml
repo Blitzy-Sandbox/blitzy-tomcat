@@ -3,7 +3,10 @@ kind: Component
 metadata:
   name: blitzy-tomcat
   description: Apache Tomcat
-  tags: []
+  tags:
+    - audit
+    - documentation
+    - java
   annotations:
     github.com/project-slug: Blitzy-Sandbox/blitzy-tomcat
     backstage.io/source-location: url:https://github.com/Blitzy-Sandbox/blitzy-tomcat/tree/main/
@@ -13,3 +16,4 @@ spec:
   lifecycle: production
   owner: blitzy-sandbox
   system: blitzy-sandbox-projects
+
