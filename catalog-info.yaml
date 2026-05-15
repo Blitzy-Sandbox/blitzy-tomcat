@@ -4,9 +4,10 @@ metadata:
   name: blitzy-tomcat
   description: Apache Tomcat
   tags:
-    - audit
-    - documentation
-    - java
+  - audit
+  - documentation
+  - java
+  - security
   annotations:
     github.com/project-slug: Blitzy-Sandbox/blitzy-tomcat
     backstage.io/source-location: url:https://github.com/Blitzy-Sandbox/blitzy-tomcat/tree/main/
@@ -16,4 +17,3 @@ spec:
   lifecycle: production
   owner: blitzy-sandbox
   system: blitzy-sandbox-projects
-
